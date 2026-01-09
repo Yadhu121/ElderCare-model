@@ -60,14 +60,14 @@ while True:
 
                 if speed > DROP_SPEED_THRESHOLD and dy > MIN_DROP_DISTANCE:
                     fall_candidate = True
-                    print("Sudden drop detected! Speed:", int(speed), "Distance:", dy)
+                    print("Fall detected! Speed:", int(speed), "Distance:", dy)
 
         prev_hipY = hip_y
         prev_time = current_time
 
         cv2.circle(frame, (w // 2, hip_y), 8, (0, 0, 255), -1)
 
-    cv2.imshow("Fall Detection - Step 1", frame)
+    cv2.imshow("Fall Detection", frame)
 
     if cv2.waitKey(1) & 0xFF == 27:
         break
