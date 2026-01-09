@@ -1,6 +1,7 @@
 import cv2
 import mediapipe as mp
 import time
+import math
 
 cap = cv2.VideoCapture(1)
 
@@ -21,6 +22,12 @@ pose = mp_pose.Pose(
 )
 
 fall_candidate = False
+
+prev_pos = None
+last_movement_time = time.time()
+
+MOVEMENT_THRESHOLD = 10
+INACTIVITY_THRESHOLD = 15
 
 while True:
 
@@ -47,6 +54,27 @@ while True:
         rh_y = int(right_hip.y * h)
 
         hip_y = (lh_y + rh_y) // 2
+        
+        hip_x = int((left_hip.x + right_hip.x) * 0.5 * w)
+        hip_y = int((left_hip.y + right_hip.y) * 0.5 * h)
+
+        current_pos = (hip_x, hip_y)
+
+        if prev_pos is not None:
+            dist = math.hypot(
+                current_pos[0] - prev_pos[0],
+                current_pos[1] - prev_pos[1]
+            )
+
+            if dist > MOVEMENT_THRESHOLD:
+                last_movement_time = current_time
+
+        prev_pos = current_pos
+
+        inactive_time = current_time - last_movement_time
+
+        if inactive_time > INACTIVITY_THRESHOLD:
+            print("Inactive for", int(inactive_time), "seconds")
 
         if prev_hipY is not None and prev_time is not None:
             dy = hip_y - prev_hipY
