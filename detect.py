@@ -7,8 +7,15 @@ cap = cv2.VideoCapture(1)
 mp_pose = mp.solutions.pose
 mp_draw = mp.solutions.drawing_utils
 
+IDLE_MOVEMENT_THRESHOLD = 5
+IDLE_DURATION_THRESHOLD = 10
+IDLE_NOTIFICATION_COOLDOWN = 60
+
 prev_hipY = None
 prev_time = None
+
+idle_start_time = None
+last_idle_alert_time = 0
 
 DROP_SPEED_THRESHOLD = 600
 MIN_DROP_DISTANCE = 40
@@ -27,14 +34,14 @@ while True:
     res, frame = cap.read()
     if not res:
         break
-    
+
     frame = cv2.flip(frame, 1)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     result = pose.process(rgb)
 
     if result.pose_landmarks:
         mp_draw.draw_landmarks(frame, result.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-
+   
         current_time = time.time()
 
         h, w, _ = frame.shape
@@ -54,6 +61,16 @@ while True:
 
             if dy > 0:
                 print("dy is", int(dy))
+
+            if abs(dy) < IDLE_MOVEMENT_THRESHOLD:
+                if idle_start_time is None:
+                    idle_start_time = current_time
+                elif (current_time - idle_start_time) > IDLE_DURATION_THRESHOLD:
+                    if (current_time - last_idle_alert_time) > IDLE_NOTIFICATION_COOLDOWN:
+                        print(f"Idle alert triggered at {current_time}")
+                        last_idle_alert_time = current_time
+            else:
+                idle_start_time = None
 
             if dt > 0:
                 speed = dy / dt
