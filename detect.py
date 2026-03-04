@@ -9,7 +9,7 @@ import websocket
 
 ELDER_ID = 101
 SECRET_KEY = "eldercare_secure_stream_key_2026"
-BACKEND_WS_URL = f"ws://localhost:5259/ws/video?elderId={ELDER_ID}&key={SECRET_KEY}"
+BACKEND_WS_URL = f"ws://localhost:/ws/video?elderId={ELDER_ID}&key={SECRET_KEY}"
 
 CAMERA_INDEX = 0
 STREAM_QUALITY = 50
