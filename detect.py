@@ -1,24 +1,113 @@
 import cv2
 import mediapipe as mp
 import time
+import json
+import base64
+import threading
+import queue
+import websocket
 
-cap = cv2.VideoCapture(1)
+ELDER_ID = 19
+SECRET_KEY = "eldercare_secure_stream_key_2026"
+BACKEND_WS_URL = f"ws://localhost:5259/ws/video?elderId={ELDER_ID}&key={SECRET_KEY}"
 
-mp_pose = mp.solutions.pose
-mp_draw = mp.solutions.drawing_utils
+CAMERA_INDEX = 0
+STREAM_QUALITY = 50
 
 IDLE_MOVEMENT_THRESHOLD = 5
 IDLE_DURATION_THRESHOLD = 10
 IDLE_NOTIFICATION_COOLDOWN = 60
 
+class ElderWSClient:
+    def __init__(self, url):
+        self.url = url
+        self.ws = None
+        self.send_queue = queue.Queue()
+        self.is_streaming = False
+        self.lock = threading.Lock()
+
+        threading.Thread(target=self._run_forever, daemon=True).start()
+        threading.Thread(target=self._sender_worker, daemon=True).start()
+
+    def _run_forever(self):
+        while True:
+            try:
+                print(f"Connecting to {self.url}...")
+                self.ws = websocket.WebSocketApp(
+                    self.url,
+                    on_message=self.on_message,
+                    on_error=self.on_error,
+                    on_close=self.on_close
+                )
+                self.ws.run_forever()
+            except Exception as e:
+                print(f"WS Connection Error: {e}")
+            time.sleep(5)
+
+    def on_message(self, ws, message):
+        try:
+            data = json.loads(message)
+            if data.get("command") == "START_STREAM":
+                print("Stream requested by backend")
+                with self.lock: self.is_streaming = True
+            elif data.get("command") == "STOP_STREAM":
+                print("Stream stopped by backend")
+                with self.lock: self.is_streaming = False
+        except Exception as e:
+            print(f"Error parsing backend command: {e}")
+
+    def on_error(self, ws, error): print(f"WS Error: {error}")
+    def on_close(self, ws, status, msg): print("WS Closed")
+
+    def _sender_worker(self):
+        while True:
+            msg = self.send_queue.get()
+            if self.ws and self.ws.sock and self.ws.sock.connected:
+                try:
+                    self.ws.send(json.dumps(msg))
+                except Exception as e:
+                    print(f"Failed to send WS message: {e}")
+            self.send_queue.task_done()
+
+    def send_event(self, event_type, frame=None):
+        msg = {
+            "event": event_type,
+            "elder_id": ELDER_ID,
+            "timestamp": time.time()
+        }
+        if frame is not None:
+            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            msg["image"] = base64.b64encode(buffer).decode('utf-8')
+        self.send_queue.put(msg)
+
+    def send_frame(self, frame):
+        with self.lock:
+            if not self.is_streaming: return
+
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, STREAM_QUALITY])
+        msg = {
+            "event": "STREAM_FRAME",
+            "elder_id": ELDER_ID,
+            "image": base64.b64encode(buffer).decode('utf-8')
+        }
+        if self.send_queue.qsize() < 5:
+            self.send_queue.put(msg)
+
+ws_client = ElderWSClient(BACKEND_WS_URL)
+
+cap = cv2.VideoCapture(CAMERA_INDEX)
+
+mp_pose = mp.solutions.pose
+mp_draw = mp.solutions.drawing_utils
+
 prev_hipY = None
 prev_time = None
 
-idle_start_time = None
-last_idle_alert_time = 0
-
 DROP_SPEED_THRESHOLD = 600
 MIN_DROP_DISTANCE = 40
+
+idle_start_time = None
+last_idle_alert_time = 0
 
 pose = mp_pose.Pose(
     static_image_mode=False,
@@ -34,14 +123,14 @@ while True:
     res, frame = cap.read()
     if not res:
         break
-
+    
     frame = cv2.flip(frame, 1)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     result = pose.process(rgb)
 
     if result.pose_landmarks:
         mp_draw.draw_landmarks(frame, result.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-   
+
         current_time = time.time()
 
         h, w, _ = frame.shape
@@ -68,6 +157,7 @@ while True:
                 elif (current_time - idle_start_time) > IDLE_DURATION_THRESHOLD:
                     if (current_time - last_idle_alert_time) > IDLE_NOTIFICATION_COOLDOWN:
                         print(f"Idle alert triggered at {current_time}")
+                        ws_client.send_event("IDLE_DETECTED", frame=frame)
                         last_idle_alert_time = current_time
             else:
                 idle_start_time = None
@@ -78,15 +168,18 @@ while True:
                 if speed > DROP_SPEED_THRESHOLD and dy > MIN_DROP_DISTANCE:
                     fall_candidate = True
                     print("Fall detected! Speed:", int(speed), "Distance:", dy)
+                    ws_client.send_event("FALL_DETECTED", frame=frame)
 
         prev_hipY = hip_y
         prev_time = current_time
 
         cv2.circle(frame, (w // 2, hip_y), 8, (0, 0, 255), -1)
 
+    ws_client.send_frame(frame)
+
     cv2.imshow("Fall Detection", frame)
 
-    if cv2.waitKey(1) == 27:
+    if cv2.waitKey(1) & 0xFF == 27:
         break
 
 cap.release()
