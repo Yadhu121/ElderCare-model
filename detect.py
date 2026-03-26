@@ -7,12 +7,11 @@ import threading
 import queue
 import websocket
 
-ELDER_ID = 19
+ELDER_ID = 25
 SECRET_KEY = "eldercare_secure_stream_key_2026"
-BACKEND_WS_URL = f"ws://localhost:5259/ws/video?elderId={ELDER_ID}&key={SECRET_KEY}" ##
+BACKEND_WS_URL = f"ws://localhost:5259/ws/video?elderId={ELDER_ID}&key={SECRET_KEY}"
 
 CAMERA_INDEX = 0
-STREAM_QUALITY = 50
 
 IDLE_MOVEMENT_THRESHOLD = 5
 IDLE_DURATION_THRESHOLD = 10
@@ -23,8 +22,6 @@ class ElderWSClient:
         self.url = url
         self.ws = None
         self.send_queue = queue.Queue()
-        self.is_streaming = False
-        self.lock = threading.Lock()
 
         threading.Thread(target=self._run_forever, daemon=True).start()
         threading.Thread(target=self._sender_worker, daemon=True).start()
@@ -35,7 +32,6 @@ class ElderWSClient:
                 print(f"Connecting to {self.url}...")
                 self.ws = websocket.WebSocketApp(
                     self.url,
-                    on_message=self.on_message,
                     on_error=self.on_error,
                     on_close=self.on_close
                 )
@@ -43,18 +39,6 @@ class ElderWSClient:
             except Exception as e:
                 print(f"WS Connection Error: {e}")
             time.sleep(5)
-
-    def on_message(self, ws, message):
-        try:
-            data = json.loads(message)
-            if data.get("command") == "START_STREAM":
-                print("Stream requested by backend")
-                with self.lock: self.is_streaming = True
-            elif data.get("command") == "STOP_STREAM":
-                print("Stream stopped by backend")
-                with self.lock: self.is_streaming = False
-        except Exception as e:
-            print(f"Error parsing backend command: {e}")
 
     def on_error(self, ws, error): print(f"WS Error: {error}")
     def on_close(self, ws, status, msg): print("WS Closed")
@@ -80,18 +64,7 @@ class ElderWSClient:
             msg["image"] = base64.b64encode(buffer).decode('utf-8')
         self.send_queue.put(msg)
 
-    def send_frame(self, frame):
-        with self.lock:
-            if not self.is_streaming: return
-
-        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, STREAM_QUALITY])
-        msg = {
-            "event": "STREAM_FRAME",
-            "elder_id": ELDER_ID,
-            "image": base64.b64encode(buffer).decode('utf-8')
-        }
-        if self.send_queue.qsize() < 5:
-            self.send_queue.put(msg)
+# REMOVED: send_frame method — Android app handles streaming now
 
 ws_client = ElderWSClient(BACKEND_WS_URL)
 
@@ -116,14 +89,11 @@ pose = mp_pose.Pose(
     min_tracking_confidence=0.6
 )
 
-fall_candidate = False
-
 while True:
-
     res, frame = cap.read()
     if not res:
         break
-    
+
     frame = cv2.flip(frame, 1)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     result = pose.process(rgb)
@@ -132,7 +102,6 @@ while True:
         mp_draw.draw_landmarks(frame, result.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
         current_time = time.time()
-
         h, w, _ = frame.shape
         lm = result.pose_landmarks.landmark
 
@@ -141,15 +110,11 @@ while True:
 
         lh_y = int(left_hip.y * h)
         rh_y = int(right_hip.y * h)
-
         hip_y = (lh_y + rh_y) // 2
 
         if prev_hipY is not None and prev_time is not None:
             dy = hip_y - prev_hipY
             dt = current_time - prev_time
-
-            if dy > 0:
-                print("dy is", int(dy))
 
             if abs(dy) < IDLE_MOVEMENT_THRESHOLD:
                 if idle_start_time is None:
@@ -164,9 +129,7 @@ while True:
 
             if dt > 0:
                 speed = dy / dt
-
                 if speed > DROP_SPEED_THRESHOLD and dy > MIN_DROP_DISTANCE:
-                    fall_candidate = True
                     print("Fall detected! Speed:", int(speed), "Distance:", dy)
                     ws_client.send_event("FALL_DETECTED", frame=frame)
 
@@ -175,7 +138,7 @@ while True:
 
         cv2.circle(frame, (w // 2, hip_y), 8, (0, 0, 255), -1)
 
-    ws_client.send_frame(frame)
+    # REMOVED: ws_client.send_frame(frame)
 
     cv2.imshow("Fall Detection", frame)
 
