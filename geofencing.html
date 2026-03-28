@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Geofence Tester</title>
+</head>
+<body>
+
+<h2>Step 1: Login</h2>
+<input id="email" type="email" placeholder="Email" /><br><br>
+<input id="password" type="password" placeholder="Password" /><br><br>
+<button onclick="login()">Login</button>
+<p id="loginStatus"></p>
+
+<hr>
+
+<h2>Step 2: Set Home Location</h2>
+<button onclick="setHome()">Use Current GPS as Home</button>
+<p id="homeStatus"></p>
+
+<hr>
+
+<h2>Step 3: Start Sending Location</h2>
+<button onclick="startSending()">Start</button>
+<button onclick="stopSending()">Stop</button>
+<p id="wsStatus"></p>
+<p id="ws2Status"></p>
+<p id="locationStatus"></p>
+
+<script>
+  const BACKEND = 'https://disproportionable-unantagonistic-alvin.ngrok-free.dev';
+  const MICROSERVICE = 'https://carried-savannah-julian-facilities.trycloudflare.com';
+
+  let elderId = null;
+  let token = null;
+  let ws1 = null;
+  let ws2 = null;
+  let interval = null;
+
+  async function login() {
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
+
+    try {
+      const res = await fetch(`${BACKEND}/api/elder/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ elderMail: email, password })
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        elderId = data.elderId;
+        token = data.token;
+        document.getElementById('loginStatus').innerText = `✅ Logged in as ${data.elderName} (ID: ${elderId})`;
+      } else {
+        document.getElementById('loginStatus').innerText = `❌ Failed: ${JSON.stringify(data)}`;
+      }
+    } catch (e) {
+      document.getElementById('loginStatus').innerText = `❌ Error: ${e.message}`;
+    }
+  }
+
+  async function setHome() {
+    if (!elderId) { alert('Login first'); return; }
+
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+
+      try {
+        const res = await fetch(`${BACKEND}/api/elder/set-home`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ elderId, lat, lng })
+        });
+
+        if (res.ok) {
+          document.getElementById('homeStatus').innerText = `✅ Home set: ${lat}, ${lng}`;
+        } else {
+          const text = await res.text();
+          document.getElementById('homeStatus').innerText = `❌ Failed: ${text}`;
+        }
+      } catch (e) {
+        document.getElementById('homeStatus').innerText = `❌ Error: ${e.message}`;
+      }
+    }, (err) => {
+      document.getElementById('homeStatus').innerText = `❌ GPS error: ${err.message}`;
+    });
+  }
+
+  function startSending() {
+    if (!elderId) { alert('Login first'); return; }
+    if (!token) { alert('No token, login first'); return; }
+
+    // Main app WS - /ws/location
+    const backendWs = BACKEND.replace('https://', 'wss://').replace('http://', 'ws://');
+    ws1 = new WebSocket(`${backendWs}/ws/location`);
+    ws1.onopen = () => document.getElementById('wsStatus').innerText = '✅ Main app WS connected';
+    ws1.onclose = () => document.getElementById('wsStatus').innerText = '🔴 Main app WS disconnected';
+    ws1.onerror = () => document.getElementById('wsStatus').innerText = '❌ Main app WS error';
+
+    // Microservice WS - /ws?token=...
+    const microWs = MICROSERVICE.replace('https://', 'wss://').replace('http://', 'ws://');
+    ws2 = new WebSocket(`${microWs}/ws?token=${token}`);
+    ws2.onopen = () => document.getElementById('ws2Status').innerText = '✅ Microservice WS connected';
+    ws2.onclose = () => document.getElementById('ws2Status').innerText = '🔴 Microservice WS disconnected';
+    ws2.onerror = () => document.getElementById('ws2Status').innerText = '❌ Microservice WS error';
+
+    interval = setInterval(() => {
+      navigator.geolocation.getCurrentPosition((pos) => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+
+        // Main app expects JSON { elderId, lat, lon }
+        if (ws1 && ws1.readyState === WebSocket.OPEN) {
+          ws1.send(JSON.stringify({ elderId, lat, lon }));
+        }
+
+        // Microservice expects plain "lat,lng"
+        if (ws2 && ws2.readyState === WebSocket.OPEN) {
+          ws2.send(`${lat},${lon}`);
+        }
+
+        document.getElementById('locationStatus').innerText =
+          `📍 Sent: ${lat}, ${lon} at ${new Date().toLocaleTimeString()}`;
+
+      }, (err) => {
+        document.getElementById('locationStatus').innerText = `❌ GPS error: ${err.message}`;
+      }, { enableHighAccuracy: true });
+    }, 3000);
+  }
+
+  function stopSending() {
+    clearInterval(interval);
+    if (ws1) ws1.close();
+    if (ws2) ws2.close();
+    document.getElementById('wsStatus').innerText = '⏹ Stopped';
+    document.getElementById('ws2Status').innerText = '';
+    document.getElementById('locationStatus').innerText = '';
+  }
+</script>
+
+</body>
+</html>
